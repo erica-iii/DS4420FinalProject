@@ -1,0 +1,122 @@
+---
+title: "bayesian_model"
+author: "Erica Indman"
+date: "2026-04-14"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Reading in, scaling, formatting, and train/test splitting inputs
+```{r}
+library(brms)
+
+speech <- read.csv("speech_features_ult.csv")
+
+speech$party <- as.factor(speech$party)
+speech <- speech[speech$party %in% c("Democrat", "Republican"), ]
+speech$party <- factor(speech$party, levels = c("Democrat", "Republican"))
+levels(speech$party)
+
+speech_scaled <- speech
+
+numeric_cols <- c(
+  "sentiment_score",
+  "negativity_score",
+  "speech_length",
+  "avg_sentence_length",
+  grep("_freq$", names(speech_scaled), value = TRUE)
+)
+
+speech_scaled[, numeric_cols] <- scale(speech_scaled[, numeric_cols])
+
+set.seed(4420)
+n <- nrow(speech_scaled)
+train_idx <- sample(1:n, size = round(0.8 * n))
+
+train_data <- speech_scaled[train_idx, ]
+test_data <- speech_scaled[-train_idx, ]
+```
+### Fitting model
+```{r}
+default_prior(
+  party ~ sentiment_score + negativity_score + speech_length + avg_sentence_length +
+    kw_democracy_freq + kw_economy_freq + kw_welfare_health_freq + kw_education_freq +
+    kw_environment_freq + kw_security_defense_freq + kw_foreign_policy_freq + kw_immigration_freq,
+  data = train_data,
+  family = bernoulli("logit")
+)
+
+manual_prior <- c(
+  prior(student_t(3, 0, 5), class = "Intercept"),
+  prior(normal(0, 1), class = "b", coef = "sentiment_score"),
+  prior(normal(0, 1), class = "b", coef = "negativity_score"),
+  prior(normal(0, 1), class = "b", coef = "speech_length"),
+  prior(normal(0, 1), class = "b", coef = "avg_sentence_length"),
+  prior(normal(0, 1), class = "b", coef = "kw_democracy_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_economy_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_welfare_health_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_education_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_environment_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_security_defense_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_foreign_policy_freq"),
+  prior(normal(0, 1), class = "b", coef = "kw_immigration_freq")
+)
+
+speech_brm <- brm(
+  party ~ sentiment_score + negativity_score + speech_length + avg_sentence_length +
+    kw_democracy_freq + kw_economy_freq + kw_welfare_health_freq + kw_education_freq +
+    kw_environment_freq + kw_security_defense_freq + kw_foreign_policy_freq + kw_immigration_freq,
+  family = bernoulli("logit"),
+  data = train_data,
+  chains = 4,
+  iter = 2500,
+  warmup = 500,
+  prior = manual_prior,
+  seed = 4420
+)
+```
+### Evaluating model
+```{r}
+summary(speech_brm)
+plot(speech_brm)
+
+test_probs <- posterior_epred(speech_brm, newdata = test_data)
+mean_test_probs <- colMeans(test_probs)
+
+true_test <- ifelse(test_data$party == "Republican", 1, 0)
+pred_test <- ifelse(mean_test_probs > 0.5, 1, 0)
+
+accuracy <- mean(pred_test == true_test)
+conf_mat <- table(True = true_test, Pred = pred_test)
+
+tp <- sum(pred_test == 1 & true_test == 1)
+tn <- sum(pred_test == 0 & true_test == 0)
+fp <- sum(pred_test == 1 & true_test == 0)
+fn <- sum(pred_test == 0 & true_test == 1)
+
+precision <- tp / (tp + fp)
+recall <- tp / (tp + fn)
+f1 <- 2 * precision * recall / (precision + recall)
+
+accuracy
+conf_mat
+precision
+recall
+f1
+
+test_pred_labels <- ifelse(pred_test == 1, "Republican", "Democrat")
+table(True = test_data$party, Pred = test_pred_labels)
+
+train_probs <- posterior_epred(speech_brm, newdata = train_data)
+mean_train_probs <- colMeans(train_probs)
+true_train <- ifelse(train_data$party == "Republican", 1, 0)
+pred_train <- ifelse(mean_train_probs > 0.5, 1, 0)
+
+train_accuracy <- mean(pred_train == true_train)
+train_accuracy
+
+plot(conditional_effects(speech_brm, "kw_welfare_health_freq"))
+plot(conditional_effects(speech_brm, "negativity_score"))
+```
